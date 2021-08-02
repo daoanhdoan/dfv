@@ -1,0 +1,6 @@
+name: Dependent Field Value (D9)
+description: 'DFV for D9'
+core_version_requirement: ^9
+package: DNC - Fields
+type: module
+

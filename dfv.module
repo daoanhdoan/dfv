@@ -1,0 +1,290 @@
+<?php
+/**
+ *
+ */
+
+use Drupal\Component\Utility\Html;
+use Drupal\Component\Utility\NestedArray;
+use Drupal\Core\Ajax\AjaxResponse;
+use Drupal\Core\Ajax\ReplaceCommand;
+use Drupal\Core\Entity\ContentEntityInterface;
+use Drupal\Core\Entity\EntityFormInterface;
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Field\FieldStorageDefinitionInterface;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\dfv\DfvUtil;
+use Drupal\field\FieldConfigInterface;
+use Drupal\quickedit\Form\QuickEditFieldForm;
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * @see field_permissions_permissions_matrix()
+ */
+function dfv_form_field_config_edit_form_alter(&$form, FormStateInterface $form_state)
+{
+  /** @var \Drupal\field\FieldConfigInterface $field */
+  $field = $form_state->getFormObject()->getEntity();
+  // Filter views that list the entity type we want, and group the separate
+  // displays by view.
+  $entityTypeManager = \Drupal::getContainer()->get('entity_type.manager');
+  $entity_type = $entityTypeManager->getDefinition($field->getTargetEntityTypeId());
+
+  $options = \Drupal::service('dfv.util')->getApplicableViewsOptions();
+  $dfv = $field->getThirdPartySetting('dfv','settings');
+
+  $form['fid'] = ['#type' => 'hidden', '#value' => $field->id()];
+  $form['dfv'] = [
+    '#type' => 'details',
+    '#title' => 'DFV Settings',
+    '#weight' => -10,
+    '#tree' => TRUE
+  ];
+
+  $form['dfv']['enable'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Enable dfv settings'),
+    '#default_value' => $dfv['enable'],
+  );
+
+  $form['dfv']['views'] = [
+    '#title' => t('Views'),
+    '#description' => t('Select views display.'),
+    '#type' => 'select',
+    '#options' => $options,
+    '#default_value' => $dfv['views'],
+    '#states' => [
+      'visible' => [
+        ':input[name="dfv[enable]"]' => ['checked' => TRUE],
+      ],
+    ]
+  ];
+
+  $fields = ["" => t('- None -')] + \Drupal::service('dfv.util')->getBundleEditableFields($entity_type->id(), $field->getTargetBundle());
+
+  $form['dfv']['parent_field'] = array(
+    '#type' => 'select',
+    '#title' => t('Parent field'),
+    '#default_value' => $dfv['parent_field'],
+    '#options' => $fields,
+    '#description' => t('Select parent field.'),
+    '#states' => [
+      'visible' => [
+        ':input[name="dfv[enable]"]' => ['checked' => TRUE],
+      ],
+    ]
+  );
+
+  $form['#entity_builders'][] = 'dfv_field_config_edit_form_builder';
+}
+
+/**
+ * Form builder for the field config edit form.
+ *
+ * @see field_permissions_form_field_config_edit_form_alter
+ */
+function dfv_field_config_edit_form_builder($entity_type, FieldConfigInterface $field, array &$form, FormStateInterface $form_state)
+{
+  $field->setThirdPartySetting('dfv', 'settings', $form_state->getValue('dfv'));
+  $field->save();
+}
+
+/**
+ * Implements @see hook_field_widget_form_alter().
+ */
+function dfv_field_widget_form_alter(&$element, FormStateInterface $form_state, $context)
+{
+  if ($context['items']) {
+    $entity = $context['items']->getEntity();
+  }
+
+  if ($entity instanceof EntityInterface) {
+    // Check if the field is a dependent field.
+    /** @var \Drupal\Core\Field\FieldItemList $items */
+    $items = $context['items'];
+    /** @var \Drupal\Core\Field\FieldConfigInterface $current_field_definition */
+    $current_field_definition = $items->getFieldDefinition();
+    $current_field_name = $current_field_definition->getName();
+    $element['#field_name'] = $current_field_name;
+
+    if ($current_field_definition->getFieldStorageDefinition()->getCardinality() == FieldStorageDefinitionInterface::CARDINALITY_UNLIMITED) {
+      $element['#multiple'] = TRUE;
+    }
+
+    // Check if field is configured as parent of one dependent field.
+    if (method_exists($entity, 'getFieldDefinitions')) {
+      $field_definitions = $entity->getFieldDefinitions();
+      $parent_field = NULL;
+
+      // Check if current field has children.
+      $child_fields = [];
+      foreach ($field_definitions as $field_name => $field_definition) {
+        if ($field_definition instanceof FieldConfigInterface) {
+          $dfv = $field_definition->getThirdPartySetting('dfv','settings');
+          if ($dfv['enable']) {
+            $parent_field_name = $dfv['parent_field'];
+            $has_children = ($parent_field_name == $current_field_name);
+            if ($has_children) {
+              $child_fields[] = $field_name;
+            }
+          }
+        }
+      }
+
+      // Add ajax to parent field.
+      if (count($child_fields)) {
+        $children = isset($element['#ajax']['br_children']) ? $element['#ajax']['br_children'] : [];
+        $children += $child_fields;
+        $element['#entity'] = $entity;
+        DfvUtil::setAjaxProperty($element, $context['widget'], $children, $current_field_definition);
+      }
+    }
+
+    \Drupal::moduleHandler()->alter('dfv_field_widget_form', $element, $form_state, $context);
+  }
+}
+
+function dfv_field_widget_multivalue_form_alter(array &$elements, FormStateInterface $form_state, array $context) {
+  $field_definition = $context['items']->getFieldDefinition();
+  if ($field_definition instanceof FieldConfigInterface) {
+    $dfv = $field_definition->getThirdPartySetting('dfv', 'settings');
+    if ($dfv['enable']) {
+      $elements['#pre_render'][] = ['Drupal\dfv\DfvUtil', 'preRenderDfvFieldWidget'];
+    }
+  }
+}
+
+function dfv_update_dependent_field_callback(array $form, FormStateInterface $form_state)
+{
+  $triggering_element = $form_state->getTriggeringElement();
+  $parent_element = [];
+  // Remove the action and the actions container.
+  $array_parents = $triggering_element['#array_parents'];
+  while (!isset($parent_element['#field_name']) && !empty($array_parents)) {
+    $parent_element = NestedArray::getValue($form, $array_parents);
+    array_pop($array_parents);
+  }
+  $response = new AjaxResponse();
+
+  if (empty($parent_element)) {
+    return $response;
+  }
+
+  $index = array_search($triggering_element['#field_name'], $triggering_element['#array_parents']);
+  $array_parents = array_slice($triggering_element['#array_parents'], 0, $index);
+
+  $parent_field_value = $triggering_element['#value'];
+  if ($triggering_element['#type'] === 'entity_autocomplete' && preg_match('/\((\d+)\)$/', $parent_field_value, $matches)) {
+    // If the field widget is entity autocomplete, the returned value is a
+    // string which contains the entity id.
+    $parent_field_value = $matches[1];
+  }
+  // If we have an array with values we should implode those values and
+  // enable Allow multiple values into our contextual filter.
+  if (is_array($parent_field_value)) {
+    $parent_field_value = implode(",", $parent_field_value);
+  }
+  // Get values from the view.
+  $args = !empty($parent_field_value) ? [$parent_field_value] : [];
+
+  /** @var \Drupal\Core\Entity\EntityInterface $entity */
+  $entity = $parent_element['#entity'];
+  $field_definitions = $entity->getFieldDefinitions();
+  // Update children.
+  $children = $triggering_element['#ajax']['br_children'];
+  foreach ($children as $child) {
+    /** @var \Drupal\Core\Field\FieldConfigInterface $field */
+    $field = !empty($field_definitions[$child]) ? $field_definitions[$child] : NULL;
+    if (!$field) {
+      continue;
+    }
+
+    $form = &NestedArray::getValue($form, $array_parents);
+    $form_field = &DfvUtil::findFormFieldElement($form, $child);
+    if (!$form_field) {
+      continue;
+    }
+    $dfv = $field->getThirdPartySetting('dfv', 'settings');
+    if ($dfv['enable']) {
+      $views = $dfv['views'];
+      list($view_name, $display_id) = explode(":", $views);
+      $options = DfvUtil::getViewResultOptions($view_name, $display_id, $args);
+      $widget = DfvUtil::getFormDisplay($entity->getEntityTypeId(), $entity->bundle())->getComponent($child);
+      if ($options) {
+        DfvUtil::setValueForElement($form_field, $field->getType(), $widget['type'], $options);
+      }
+
+      $context = [
+        'field' => $field,
+        'widget' => $widget
+      ];
+
+      \Drupal::moduleHandler()->alter("dfv_update_dependent_field", $form_field, $options, $context);
+
+      $wrapper_id = 'div[id^="edit-' . Html::getId(implode("-", $form_field['#parents'])) . '"]';
+      $response->addCommand(new ReplaceCommand($wrapper_id, $form_field));
+    }
+  }
+
+  return $response;
+}
+
+/**
+ * Implements hook_form_alter()
+ */
+
+/**
+ * Implements @see hook_form_alter().
+ */
+function dfv_form_alter(&$form, FormStateInterface $form_state)
+{
+  $form_object = $form_state->getFormObject();
+  // Establish whether we're in a normal EntityForm context or an inline
+  // QuickeditFieldForm context and retrieve the entity from the respectively
+  // appropriate place.
+  if ($form_object instanceof EntityFormInterface) {
+    $entity = $form_object->getEntity();
+  } else {
+    if ($form_object instanceof QuickEditFieldForm) {
+      $entity = $form_state->getBuildInfo()['args'][0];
+    } else {
+      $entity = new stdClass();
+    }
+  };
+
+  if ($entity instanceof ContentEntityInterface) {
+    // Check if field is configured as parent of one dependent field.
+    if (method_exists($entity, 'getFieldDefinitions')) {
+      $field_definitions = $entity->getFieldDefinitions();
+      foreach ($field_definitions as $field_name => $field_definition) {
+        if ($field_definition instanceof FieldConfigInterface) {
+          $widget = DfvUtil::getFormDisplay($entity->getEntityTypeId(), $entity->bundle())->getComponent($field_name);
+          $enable = $field_definition->getThirdPartySetting('dfv', 'enable');
+          if ($enable && ($widget['type'] == 'options_select')) {
+            $parent_field_name = $field_definition->getThirdPartySetting('dfv', 'parent_field');
+            $parent = &DfvUtil::findFormFieldElement($form, $parent_field_name);
+            if ($parent) {
+              $args = DfvUtil::getDefaultValueElement($parent, $field_definitions[$parent_field_name]);
+            }
+
+            if (is_array($args)) {
+              $args = implode(",", $args);
+            }
+
+            // Get values from the view.
+            $args = !empty($args) ? [$args] : [];
+            $views = $field_definition->getThirdPartySetting('dfv', 'views');
+            list($view_name, $display_id) = explode(":", $views);
+            $options = DfvUtil::getViewResultOptions($view_name, $display_id, $args);
+            if ($options) {
+              $element = &DfvUtil::findFormFieldElement($form, $field_name);
+              if ($element) {
+                DfvUtil::setValueForElement($element, $field_definition, $widget['type'], $options);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,5 @@
+services:
+  dfv.util:
+    class: Drupal\dfv\DfvUtil
+    arguments:
+      - '@service_container'

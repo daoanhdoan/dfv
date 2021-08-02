@@ -1,0 +1,16 @@
+views.display.dfv:
+  type: views_display
+  label: 'Dependent Field Values'
+views.row.dfv:
+  type: views.row.fields
+  label: 'Dependent Field Values inline fields'
+views.style.dfv:
+  type: views_style
+  label: 'Dependent Field Values list'
+  mapping:
+    title_field:
+      type: string
+      label: 'Title field'
+    key_field:
+      type: string
+      label: 'Key field'

@@ -1,0 +1,4 @@
+<?php
+function dfv_install() {
+  module_set_weight('dfv', 999999);
+}

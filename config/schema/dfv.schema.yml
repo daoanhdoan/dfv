@@ -1,0 +1,17 @@
+# Schema for the Dependent Field Value module.
+field.field.*.*.*.third_party.dfv:
+  type: mapping
+  label: 'DFV settings'
+  mapping:
+    settings:
+      type: mapping
+      mapping:
+        enable:
+          type: boolean
+          label:
+        parent_field:
+          type: string
+          label: 'Field parent'
+        views:
+          type: string
+          label: 'Field parent'
