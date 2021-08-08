@@ -1,9 +1,12 @@
 {
-  "name": "daoanhdoan/dfv",
-  "description": "Dependent Field Value (D9) - DFV for D9",
-  "type": "drupal-custom-module",
-  "license":"GPL-2.0",
-  "extra": {
-    "installer-name": "dfv"
-  }
+    "name" : "daoanhdoan/dfv",
+    "description": "Dependent Field Value (D9) - DFV for D9",
+    "type" : "drupal-custom-module",
+    "license": "GPL-2.0",
+    "extra": {
+        "installer-name": "dfv"
+    },
+    "require": {
+        
+    }
 }
